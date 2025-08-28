@@ -54,7 +54,6 @@
 #include "nu_macaddr.h"
 #include "usp_api.h"
 #include "text_utils.h"
-#include "cli.h"
 
 //------------------------------------------------------------------------------
 // String, set by '-i' command line option to specify the network interface to be used by USP communications
@@ -133,11 +132,7 @@ int nu_macaddr_wan_macaddr(unsigned char *buf)
     // Exit if unable to get the MAC address of the interface
     if (err == -1)
     {
-        // Avoid annoying warning if WAN interface is unknown (as it's unnecessary to specify it when using CLI commands)
-        if (is_running_cli_command == false)
-        {
-            USP_ERR_SetMessage("%s: ioctl() failed. Unable to get MAC address for interface %s (errno=%d, %m)", __FUNCTION__, ifr.ifr_name, errno);
-        }
+        USP_ERR_SetMessage("%s: ioctl() failed. Unable to get MAC address for interface %s (errno=%d, %m)", __FUNCTION__, ifr.ifr_name, errno);
         return USP_ERR_INTERNAL_ERROR;
     }
 

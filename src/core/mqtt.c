@@ -166,11 +166,6 @@ char *mqtt_state_names[kMqttState_Max] =
 };
 
 //------------------------------------------------------------------------------
-// Buffer containing root cause of failing to initiate a send
-// If the message that couldn't be sent was a USP response message, then this string is sent to the Controller in an ERROR response
-static char mqtt_publish_err_msg[128];
-
-//------------------------------------------------------------------------------
 // Payload to send in MQTT queue
 typedef struct
 {
@@ -259,7 +254,6 @@ void QueueUspMqttConnectRecords(mqtt_client_t *client);
 void QueueUspRecord_MQTT(mqtt_client_t *client, mtp_send_item_t *msi, char *controller_topic, time_t expiry_time, bool link_to_head);
 void MqttSubscriptionReplace(mqtt_subscription_t *dest, mqtt_subs_config_t *src);
 void MqttSubscriptionDestroy(mqtt_subscription_t *sub);
-void SaveMqttPublishErrMsg(const char *fmt, ...);
 
 //------------------------------------------------------------------------------------
 #define DEFINE_MQTT_TrustCertVerifyCallbackIndex(index) \
@@ -1229,9 +1223,6 @@ void MQTT_UpdateAllSockSet(socket_set_t *set)
 {
     int i;
     int sock;
-    int err;
-    mqtt_send_item_t *q_msg;
-    mqtt_client_t *client;
 
     OS_UTILS_LockMutex(&mqtt_access_mutex);
 
@@ -1246,6 +1237,7 @@ void MQTT_UpdateAllSockSet(socket_set_t *set)
     SOCKET_SET_UpdateTimeout(1*SECONDS, set);
 
     // Iterate over all mqtt clients currently enabled
+    mqtt_client_t* client = NULL;
     for (i = 0; i < MAX_MQTT_CLIENTS; i++)
     {
         client = &mqtt_clients[i];
@@ -1257,14 +1249,12 @@ void MQTT_UpdateAllSockSet(socket_set_t *set)
                     RemoveExpiredMqttMessages(client);
                     if ((client->usp_record_send_queue.head) && (client->is_subscribed))
                     {
-                        // Initiate send. Note: if an error occured, it will be logged in mqtt_publish_err_msg[]
-                        err = SendQueueHead(client);
-                        if (err == USP_ERR_OK)
+                        if (SendQueueHead(client) == USP_ERR_OK)
                         {
-                            // Initiated send successfully
                             // If this is a USP disconnect record, then save the (libmosquitto allocated) message id, so that
                             // when we get the publish callback, we can then shutdown the connection
                             // NOTE: USP Disconnect records terminating an E2E session (kMtpContentType_E2E_SessTermination) do not shutdown the connection
+                            mqtt_send_item_t *q_msg;
                             q_msg = (mqtt_send_item_t *) client->usp_record_send_queue.head;
                             client->disconnect_mid = (q_msg->item.content_type == kMtpContentType_DisconnectRecord) ? q_msg->mid : INVALID_MOSQUITTO_MID;
 
@@ -1273,16 +1263,7 @@ void MQTT_UpdateAllSockSet(socket_set_t *set)
                         }
                         else
                         {
-                            // Failed to initiate send
-                            // Replace the item to send with a USP ERROR or drop the item, to prevent send queue deadlock
-                            q_msg = (mqtt_send_item_t *) client->usp_record_send_queue.head;
-                            if (q_msg != NULL)
-                            {
-                                if (MSG_HANDLER_ShouldDropFailedMessage(&q_msg->item, mqtt_publish_err_msg) == true)
-                                {
-                                    RemoveMqttQueueItem(client, q_msg);
-                                }
-                            }
+                            USP_LOG_Error("%s: Failed to send head of the queue, leaving there to try again", __FUNCTION__);
                         }
                     }
                     break;
@@ -1354,7 +1335,6 @@ void MQTT_ProcessAllSocketActivity(socket_set_t* set)
 {
     int i;
     int sock;
-    int mosq_err;
     mqtt_client_t *client;
 
     OS_UTILS_LockMutex(&mqtt_access_mutex);
@@ -1384,11 +1364,9 @@ void MQTT_ProcessAllSocketActivity(socket_set_t* set)
                         // Send all data on socket - if required
                         if (SOCKET_SET_IsReadyToWrite(sock, set) && mosquitto_want_write(client->mosq))
                         {
-                            mosq_err = mosquitto_loop_write(client->mosq, 1);
-                            if (mosq_err != MOSQ_ERR_SUCCESS)
+                            if (mosquitto_loop_write(client->mosq, 1) != MOSQ_ERR_SUCCESS)
                             {
-                                USP_LOG_Error("%s: Failed to write to socket: %s", __FUNCTION__, mosquitto_strerror(mosq_err));
-                                HandleMqttError(client, kMqttFailure_ReadWrite, "write failure");
+                                USP_LOG_Error("%s: Failed to write to socket", __FUNCTION__);
                             }
                         }
                     }
@@ -1398,11 +1376,9 @@ void MQTT_ProcessAllSocketActivity(socket_set_t* set)
                     {
                         if (SOCKET_SET_IsReadyToRead(sock, set))
                         {
-                            mosq_err = mosquitto_loop_read(client->mosq, 1);
-                            if (mosq_err != MOSQ_ERR_SUCCESS)
+                            if (mosquitto_loop_read(client->mosq, 1) != MOSQ_ERR_SUCCESS)
                             {
-                                USP_LOG_Error("%s: Failed to read from socket: %s", __FUNCTION__, mosquitto_strerror(mosq_err));
-                                HandleMqttError(client, kMqttFailure_ReadWrite, "read failure");
+                                USP_LOG_Error("%s: Failed to read from socket", __FUNCTION__);
                             }
                         }
                     }
@@ -1410,11 +1386,9 @@ void MQTT_ProcessAllSocketActivity(socket_set_t* set)
                     sock = mosquitto_socket(client->mosq);
                     if (sock != -1)   // NOTE: Retesting, as connection may have been closed after reading
                     {
-                        mosq_err = mosquitto_loop_misc(client->mosq);
-                        if (mosq_err != MOSQ_ERR_SUCCESS)
+                        if (mosquitto_loop_misc(client->mosq) != MOSQ_ERR_SUCCESS)
                         {
-                            USP_LOG_Error("%s: Failed to write misc: %s", __FUNCTION__, mosquitto_strerror(mosq_err));
-                            HandleMqttError(client, kMqttFailure_ReadWrite, "misc write failure");
+                            USP_LOG_Error("%s: Failed to write misc", __FUNCTION__);
                         }
                     }
                     break;
@@ -2328,7 +2302,6 @@ void QueueUspRecord_MQTT(mqtt_client_t *client, mtp_send_item_t *msi, char *cont
 ** SendQueueHead
 **
 ** Publishes the USP record at the front of the queue
-** NOTE: If an error occurs it is saved in mqtt_publish_err_msg[]
 **
 ** \param   client - pointer to MQTT client
 **
@@ -2342,9 +2315,6 @@ int SendQueueHead(mqtt_client_t *client)
     // Can't be passed a NULL client
     USP_ASSERT(client != NULL);
 
-    // Save default cause of failure as empty string. If the ACS receives this in an error message, then there is some path which does not save the cause of error
-    mqtt_publish_err_msg[0] = '\0';
-
     mqtt_state_t state = client->state;
     if (state == kMqttState_Running)
     {
@@ -2353,7 +2323,7 @@ int SendQueueHead(mqtt_client_t *client)
         // Check the queue head is ok
         if (q_msg == NULL)
         {
-            SaveMqttPublishErrMsg("%s: Can't send NULL head", __FUNCTION__);
+            USP_LOG_Error("%s: Can't send NULL head", __FUNCTION__);
             return USP_ERR_INTERNAL_ERROR;
         }
 
@@ -2361,7 +2331,7 @@ int SendQueueHead(mqtt_client_t *client)
     }
     else
     {
-        SaveMqttPublishErrMsg("%s: Incorrect state for sending messages %s", __FUNCTION__, mqtt_state_names[state]);
+        USP_LOG_Error("%s: Incorrect state for sending messages %s", __FUNCTION__, mqtt_state_names[state]);
         err = USP_ERR_INTERNAL_ERROR;
     }
 
@@ -3282,6 +3252,7 @@ void SubscribeToAll(mqtt_client_t *client)
     str_vector_t subscribed_topics;
     char *response_topic;
     int index;
+    char buf[128];
 
     STR_VECTOR_Init(&subscribed_topics);
 
@@ -3307,7 +3278,11 @@ void SubscribeToAll(mqtt_client_t *client)
     }
     else
     {
-        USP_LOG_Warning("%s: No response topic configured (or set by the CONNACK)", __FUNCTION__);
+        // Exit if no agent response topic configured (or set by the CONNACK)
+        USP_SNPRINTF(buf, sizeof(buf), "%s: No response topic configured (or set by the CONNACK)", __FUNCTION__);
+        USP_LOG_Error("%s", buf);
+        HandleMqttError(client, kMqttFailure_Misconfigured, buf);
+        return;
     }
 
     // Subscribe to all subscriptions configured in Device.MQTT.Client.{i}.Subscription.{i}
@@ -3757,7 +3732,6 @@ void UnsubscribeV5Callback(struct mosquitto *mosq, void *userdata, int mid, cons
 ** Publish
 **
 ** Initiates an MQTT PUBLISH for the specified USP record
-** NOTE: If an error occurs it is saved in mqtt_publish_err_msg[]
 **
 ** \param   client - pointer to MQTT client
 ** \param   msg - pointer to message to send
@@ -3769,10 +3743,6 @@ int Publish(mqtt_client_t *client, mqtt_send_item_t *msg)
 {
     int err = USP_ERR_OK;
     char buf[512];
-    int mosq_err;
-    char escaped_agent_topic[MAX_TOPIC_LEN];
-    char topic[2*MAX_TOPIC_LEN+10];             // Plus 10 to allow for '/reply-to='
-
 
     USP_ASSERT(client != NULL);
     USP_ASSERT(msg != NULL);
@@ -3788,28 +3758,23 @@ int Publish(mqtt_client_t *client, mqtt_send_item_t *msg)
     }
     else
     {
+        char escaped_agent_topic[MAX_TOPIC_LEN];
+        char topic[2*MAX_TOPIC_LEN+10];             // Plus 10 to allow for '/reply-to='
+
         if (msg->item.content_type != kMtpContentType_BulkDataReport)
         {
-            if ((client->response_subscription.topic != NULL) && (client->response_subscription.topic[0] != '\0'))
-            {
-                TEXT_UTILS_ReplaceCharInString(client->response_subscription.topic, '/', "%2F", escaped_agent_topic, sizeof(escaped_agent_topic));
-                USP_SNPRINTF(topic, sizeof(topic), "%s/reply-to=%s", msg->topic, escaped_agent_topic);
-            }
-            else
-            {
-                USP_LOG_Error("%s: Sending %s without a ResponseTopic", __FUNCTION__, MSG_HANDLER_UspMsgTypeToString(msg->item.usp_msg_type));
-                USP_STRNCPY(topic, msg->topic, sizeof(topic));
-            }
+            USP_ASSERT((client->response_subscription.topic!= NULL) && (client->response_subscription.topic[0] != '\0')); // SubscribeToAll() should have prevented the code getting here
+            TEXT_UTILS_ReplaceCharInString(client->response_subscription.topic, '/', "%2F", escaped_agent_topic, sizeof(escaped_agent_topic));
+            USP_SNPRINTF(topic, sizeof(topic), "%s/reply-to=%s", msg->topic, escaped_agent_topic);
         }
         else
         {
             USP_STRNCPY(topic, msg->topic, sizeof(topic));
         }
 
-        mosq_err = mosquitto_publish(client->mosq, &msg->mid, topic, msg->item.pbuf_len, msg->item.pbuf, msg->qos, false /*retain*/);
-        if (mosq_err != MOSQ_ERR_SUCCESS)
+        if (mosquitto_publish(client->mosq, &msg->mid, topic, msg->item.pbuf_len, msg->item.pbuf, msg->qos, false /*retain*/) != MOSQ_ERR_SUCCESS)
         {
-            SaveMqttPublishErrMsg("%s: Failed to publish with error %d (%s)", __FUNCTION__, mosq_err, mosquitto_strerror(mosq_err));
+            USP_LOG_Error("%s: Failed to publish message to topic=%s", __FUNCTION__, topic);
             err = USP_ERR_INTERNAL_ERROR;
         }
 
@@ -3829,7 +3794,6 @@ int Publish(mqtt_client_t *client, mqtt_send_item_t *msg)
 ** PublishV5
 **
 ** Initiates an MQTTv5 PUBLISH for the specified USP record
-** NOTE: If an error occurs it is saved in mqtt_publish_err_msg[]
 **
 ** \param   client - pointer to MQTT client
 ** \param   msg - pointer to message to send
@@ -3852,47 +3816,38 @@ int PublishV5(mqtt_client_t *client, mqtt_send_item_t *msg)
     content_type = (msg->item.content_type == kMtpContentType_BulkDataReport) ? MQTT_BULK_DATA_CONTENT_TYPE : MQTT_USP_CONTENT_TYPE;
     if (mosquitto_property_add_string(&proplist, CONTENT_TYPE, content_type) != MOSQ_ERR_SUCCESS)
     {
-        SaveMqttPublishErrMsg("%s: Failed to add content type string", __FUNCTION__);
+        USP_LOG_Error("%s: Failed to add content type string", __FUNCTION__);
         err = USP_ERR_INTERNAL_ERROR;
         goto error;
     }
     FRAME_TRACE_ADD(client, "content_type: %s", content_type);
 
     // Exit if unable to set response topic in the frame
-    // NOTE: It is possible for no response topic to be either configured or specified in the CONNACK
-    // In this case we send the message, but without a ResponseTopic. This is a problem for USP notifications
-    // that require a notify response from the Controller, as the Controller doesn't know where to send it
     if (msg->item.content_type != kMtpContentType_BulkDataReport)
     {
-        if ((client->response_subscription.topic != NULL) && (client->response_subscription.topic[0] != '\0'))
+        USP_ASSERT((client->response_subscription.topic!= NULL) && (client->response_subscription.topic[0] != '\0')); // SubscribeToAll() should have prevented the code getting here
+        if (mosquitto_property_add_string(&proplist, RESPONSE_TOPIC, client->response_subscription.topic) != MOSQ_ERR_SUCCESS)
         {
-            if (mosquitto_property_add_string(&proplist, RESPONSE_TOPIC, client->response_subscription.topic) != MOSQ_ERR_SUCCESS)
-            {
-                SaveMqttPublishErrMsg("%s: Failed to add response topic string", __FUNCTION__);
-                err = USP_ERR_INTERNAL_ERROR;
-                goto error;
-            }
-            FRAME_TRACE_ADD(client, "response_topic: %s", client->response_subscription.topic);
+            USP_LOG_Error("%s: Failed to add response topic string", __FUNCTION__);
+            err = USP_ERR_INTERNAL_ERROR;
+            goto error;
         }
-        else
-        {
-            USP_LOG_Error("%s: Sending %s without a ResponseTopic", __FUNCTION__, MSG_HANDLER_UspMsgTypeToString(msg->item.usp_msg_type));
-        }
+        FRAME_TRACE_ADD(client, "response_topic: %s", client->response_subscription.topic);
     }
 
     // Exit if property check failed
     if (mosquitto_property_check_all(PUBLISH, proplist) != MOSQ_ERR_SUCCESS)
     {
-        SaveMqttPublishErrMsg("%s: property check failed.", __FUNCTION__);
+        USP_LOG_Error("%s: property check failed.", __FUNCTION__);
         err = USP_ERR_INTERNAL_ERROR;
         goto error;
     }
 
-    // Exit if unable to publish the packet
+    // Exit if unableproperty check failed
     mosq_err = mosquitto_publish_v5(client->mosq, &msg->mid, msg->topic, msg->item.pbuf_len, msg->item.pbuf, msg->qos, false /* retain */, proplist);
     if (mosq_err != MOSQ_ERR_SUCCESS)
     {
-        SaveMqttPublishErrMsg("%s: Failed to publish to v5 with error %d (%s)", __FUNCTION__, mosq_err, mosquitto_strerror(mosq_err));
+        USP_LOG_Error("%s: Failed to publish to v5 with error %d", __FUNCTION__, mosq_err);
         err = USP_ERR_INTERNAL_ERROR;
         goto error;
     }
@@ -4708,29 +4663,6 @@ void RemoveExpiredMqttMessages(mqtt_client_t *client)
     }
 }
 
-/*********************************************************************//**
-**
-** SaveMqttPublishErrMsg
-**
-** Saves the cause of failure for SendQueueHead() in mqtt_publish_err_msg[]
-** so that is is available to put in an Error message that replaces the message that failed to send
-**
-** \param   fmt - printf style format
-**
-** \return  None
-**
-**************************************************************************/
-void SaveMqttPublishErrMsg(const char *fmt, ...)
-{
-    va_list ap;
 
-    // Print the message to the buffer, so that it can be used later
-    va_start(ap, fmt);
-    vsnprintf(mqtt_publish_err_msg, sizeof(mqtt_publish_err_msg), fmt, ap);
-    va_end(ap);
-
-    // Log to the log file too
-    USP_LOG_Error("%s", mqtt_publish_err_msg);
-}
 
 #endif

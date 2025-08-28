@@ -47,7 +47,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/sysinfo.h>
-
+#include <unistd.h>  // at the top of the file
+#include "usp_err_codes.h"
 #include "common_defs.h"
 #include "usp_api.h"
 #include "dm_access.h"
@@ -58,10 +59,10 @@
 #include "nu_ipaddr.h"
 #include "text_utils.h"
 #include "uptime.h"
+#include "hostname.h"
 #include "iso8601.h"
 #include "os_utils.h"
 #include "bdc_exec.h"
-#include "cli.h"
 
 
 
@@ -164,7 +165,10 @@ int GetActiveSoftwareVersion(dm_req_t *req, char *buf, int len);
 #ifndef REMOVE_DEVICE_INFO
 int GetHardwareVersion(dm_req_t *req, char *buf, int len);
 int GetKernelUpTime(dm_req_t *req, char *buf, int len);
+int GetHostName(dm_req_t *req, char *value, int len);
+int SetHostName(dm_req_t *req, char *value);
 #endif
+
 #ifndef REMOVE_DEVICE_REBOOT
 int ScheduleReboot(dm_req_t *req, char *command_key, kv_vector_t *input_args, kv_vector_t *output_args);
 #endif
@@ -196,6 +200,10 @@ int DEVICE_LOCAL_AGENT_Init(void)
     err = USP_ERR_OK;
     err |= USP_REGISTER_VendorParam_ReadOnly("Device.LocalAgent.UpTime", GetAgentUpTime, DM_UINT);
 
+
+
+
+
     // Register supported protocols and software version
     err |= USP_REGISTER_Param_SupportedList("Device.LocalAgent.SupportedProtocols", mtp_protocols, NUM_ELEM(mtp_protocols));
     err |= USP_REGISTER_Param_Constant("Device.LocalAgent.SoftwareVersion", AGENT_SOFTWARE_VERSION, DM_STRING);
@@ -225,6 +233,8 @@ int DEVICE_LOCAL_AGENT_Init(void)
     err |= USP_REGISTER_DBParam_ReadWrite(reboot_command_key_path, "", NULL, NULL, DM_STRING);
     err |= USP_REGISTER_DBParam_ReadWrite(reboot_request_instance_path, "-1", NULL, NULL, DM_INT);
     err |= USP_REGISTER_DBParam_ReadWrite(last_software_version_path, "", NULL, NULL, DM_STRING);
+
+
 #endif
 
 #ifndef REMOVE_DEVICE_INFO
@@ -233,6 +243,14 @@ int DEVICE_LOCAL_AGENT_Init(void)
     err |= USP_REGISTER_Param_Constant("Device.DeviceInfo.Manufacturer", VENDOR_MANUFACTURER, DM_STRING);
     err |= USP_REGISTER_Param_Constant("Device.DeviceInfo.ModelName", VENDOR_MODEL_NAME, DM_STRING);
     err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.HardwareVersion", GetHardwareVersion, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly(
+    "Device.DeviceInfo.HostName",
+    GetHostName,
+    DM_STRING
+);
+ 
+
+
     err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.UpTime", GetKernelUpTime, DM_UINT);
 
     // NOTE: The default values of these database parameters are setup later in DEVICE_LOCAL_AGENT_SetDefaults()
@@ -641,6 +659,24 @@ int GetAgentUpTime(dm_req_t *req, char *buf, int len)
     return USP_ERR_OK;
 }
 
+
+// getter prototype
+int GetHostName(dm_req_t *req, char *value, int len)
+{
+    (void)req;
+    if (gethostname(value, (size_t)len) != 0)
+    {
+        if (len > 0)
+            value[0] = '\0';
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    return USP_ERR_OK;
+}
+
+
+// registering HostName parameter
+
+
 #ifndef REMOVE_DEVICE_INFO
 /*********************************************************************//**
 **
@@ -655,6 +691,9 @@ int GetAgentUpTime(dm_req_t *req, char *buf, int len)
 ** \return  USP_ERR_OK if successful
 **
 **************************************************************************/
+
+
+
 int GetKernelUpTime(dm_req_t *req, char *buf, int len)
 {
     struct sysinfo info;
@@ -837,11 +876,7 @@ int GetDefaultSerialNumber(char *buf, int len)
     if (err != USP_ERR_OK)
     {
         // If unable to get the WAN interface's MAC address, then set serial number to 'undefined'
-        // Avoid annoying warning if WAN interface is unknown (as it's unnecessary to specify it when using CLI commands)
-        if (is_running_cli_command == false)
-        {
-            USP_LOG_Warning("%s: WARNING: Unable to determine a serial number for this device", __FUNCTION__);
-        }
+        USP_LOG_Warning("%s: WARNING: Unable to determine a serial number for this device", __FUNCTION__);
         USP_STRNCPY(buf, "undefined", len);
         return USP_ERR_OK;
     }

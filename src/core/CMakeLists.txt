@@ -59,6 +59,7 @@ add_library(core
     device_selftest_example.c
     device_time.c
     uptime.c
+    hostname.c
     rfc1123.c
     database.c
     usp_err.c

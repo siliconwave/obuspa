@@ -147,6 +147,7 @@ int AddChildParamsDefaultValues(char *path, int path_len, dm_node_t *node, dm_in
 int DeleteChildParams(char *path, int path_len, dm_node_t *node, dm_instances_t *inst);
 int DeleteChildParams_MultiInstanceObject(char *path, int path_len, dm_node_t *node, dm_instances_t *inst);
 int strncpy_path_segments(char *dst, char *src, int maxlen);
+int Get_DeviceInfo_HostName(char *buf, int len);
 void DumpSchemaFromRoot(dm_node_t *root, char *name);
 void AddChildNodes(dm_node_t *parent, str_vector_t *sv);
 void AddChildArgs(str_vector_t *sv, char *path, str_vector_t *args, char *arg_type);
@@ -1270,79 +1271,6 @@ int DATA_MODEL_GetPermissions(char *path, combined_role_t *combined_role, unsign
     *perm = DM_PRIV_GetPermissions(node, &inst, combined_role, 0);
 
     return USP_ERR_OK;
-}
-
-/*********************************************************************//**
-**
-** DATA_MODEL_IsDeletePermitted
-**
-** Determines whether the specified path instance (and all nested child table instances) are permitted to be deleted
-**
-** \param   obj_path - instance to delete
-** \param   combined_role - roles to use when performing the delete
-**
-** \return  USP_ERR_OK if the instance is permiteed to be deleted, or an error otherwise
-**
-**************************************************************************/
-int DATA_MODEL_IsDeletePermitted(char *obj_path, combined_role_t *combined_role)
-{
-    int i;
-    int err;
-    str_vector_t child_objs;
-    dm_instances_t inst;
-    dm_node_t *node;
-    unsigned short perm;
-    char *path;
-
-    STR_VECTOR_Init(&child_objs);
-
-    // Exit if unable to determine the node representing the path
-    node = DM_PRIV_GetNodeFromPath(obj_path, &inst, NULL, 0);
-    if (node == NULL)
-    {
-        return USP_ERR_INTERNAL_ERROR;
-    }
-
-    // Exit if this object is a non-table object. These cannot be deleted
-    if (node->type != kDMNodeType_Object_MultiInstance)
-    {
-        USP_ERR_SetMessage("%s: Cannot delete instances of %s. Not a multi-instance object.", __FUNCTION__, obj_path);
-        return USP_ERR_OBJECT_NOT_CREATABLE;
-    }
-
-    // Exit if unable to determine all child instances
-    err = DM_INST_VECTOR_GetAllInstancePaths_Qualified(&inst, &child_objs);
-    if (err != USP_ERR_OK)
-    {
-        return err;
-    }
-
-    // Iterate over all child paths, checking that we have permission
-    for (i=0; i < child_objs.num_entries; i++)
-    {
-        path = child_objs.vector[i];
-        err = DATA_MODEL_GetPermissions(path, combined_role, &perm, 0);
-        if (err != USP_ERR_OK)
-        {
-            goto exit;
-        }
-
-        // Exit if there are any objects which we do not have permission to delete
-        if ((perm & PERMIT_DEL) == 0)
-        {
-            USP_ERR_SetMessage("%s: No permission to delete %s", __FUNCTION__, path);
-            STR_VECTOR_Destroy(&child_objs);
-            err = USP_ERR_PERMISSION_DENIED;
-            goto exit;
-        }
-    }
-
-    // If the code gets here, then we're permitted to delete all instances
-    err = USP_ERR_OK;
-
-exit:
-    STR_VECTOR_Destroy(&child_objs);
-    return err;
 }
 
 /*********************************************************************//**
@@ -2894,10 +2822,7 @@ int DATA_MODEL_FindUnusedGroupId(void)
     for (i=0; i<MAX_VENDOR_PARAM_GROUPS; i++)
     {
         gvh = &group_vendor_hooks[i];
-        if ((gvh->get_group_cb == NULL) && (gvh->set_group_cb == NULL) &&
-            (gvh->add_group_cb == NULL) && (gvh->del_group_cb == NULL) &&
-            (gvh->subscribe_cb == NULL) && (gvh->unsubscribe_cb == NULL) &&
-            (gvh->create_obj_cb == NULL) && (gvh->multi_del_cb == NULL))
+        if (gvh->get_group_cb == NULL)
         {
             return i;
         }
@@ -5699,3 +5624,26 @@ int SetVendorParam(dm_node_t *node, char *path, dm_instances_t *inst, char *valu
 
     return USP_ERR_OK;
 }
+
+#include <unistd.h>  // for gethostname
+#include <string.h>  // for strncpy
+#include "dm_exec.h" // or appropriate USP headers for registering parameters
+
+#define MAX_HOSTNAME_LEN 256
+
+// Handler to return the device hostname
+int Get_DeviceInfo_HostName(char *buf, int len)
+{
+    char hostname[MAX_HOSTNAME_LEN];
+    if (gethostname(hostname, sizeof(hostname)) == 0) {
+        strncpy(buf, hostname, len - 1);
+        buf[len - 1] = '\0';
+        return USP_ERR_OK;
+    } else {
+        buf[0] = '\0';
+        return USP_ERR_INTERNAL_ERROR;
+    }
+}
+
+// Add this inside the data model registration function
+// USP_REGISTER_DB_PARAM("Device.DeviceInfo.HostName", Get_DeviceInfo_HostName, NULL);
