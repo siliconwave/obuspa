@@ -47,6 +47,14 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/sysinfo.h>
+#include <sys/utsname.h>
+#include <sys/ioctl.h>
+#include <sys/statvfs.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <stdbool.h>
 #include <unistd.h>  // at the top of the file
 #include "usp_err_codes.h"
 #include "common_defs.h"
@@ -167,6 +175,21 @@ int GetHardwareVersion(dm_req_t *req, char *buf, int len);
 int GetKernelUpTime(dm_req_t *req, char *buf, int len);
 int GetHostName(dm_req_t *req, char *value, int len);
 int SetHostName(dm_req_t *req, char *value);
+int GetOSName(dm_req_t *req, char *buf, int len);
+int GetOSVersion(dm_req_t *req, char *buf, int len);
+int GetKernelVersion(dm_req_t *req, char *buf, int len);
+int GetArchitecture(dm_req_t *req, char *buf, int len);
+int GetCPUCount(dm_req_t *req, char *buf, int len);
+int GetIPAddress(dm_req_t *req, char *buf, int len);
+int GetMACAddress(dm_req_t *req, char *buf, int len);
+int GetPublicIP(dm_req_t *req, char *buf, int len);
+int GetTimezone(dm_req_t *req, char *buf, int len);
+int GetLocation(dm_req_t *req, char *buf, int len);
+int GetStorageUsed(dm_req_t *req, char *buf, int len);
+int GetStorageAvailable(dm_req_t *req, char *buf, int len);
+int GetMemoryUsed(dm_req_t *req, char *buf, int len);
+int GetMemoryAvailable(dm_req_t *req, char *buf, int len);
+int GetCPUUsage(dm_req_t *req, char *buf, int len);
 #endif
 
 #ifndef REMOVE_DEVICE_REBOOT
@@ -248,8 +271,21 @@ int DEVICE_LOCAL_AGENT_Init(void)
     GetHostName,
     DM_STRING
 );
- 
-
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.OSName", GetOSName, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.OSVersion", GetOSVersion, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.KernelVersion", GetKernelVersion, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.Architecture", GetArchitecture, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.CPUCount", GetCPUCount, DM_UINT);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.IPAddress", GetIPAddress, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.MACAddress", GetMACAddress, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.PublicIP", GetPublicIP, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.Timezone", GetTimezone, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.Location", GetLocation, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.StorageUsed", GetStorageUsed, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.StorageAvailable", GetStorageAvailable, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.MemoryUsed", GetMemoryUsed, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.MemoryAvailable", GetMemoryAvailable, DM_STRING);
+    err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.CPUUsage", GetCPUUsage, DM_STRING);
 
     err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.UpTime", GetKernelUpTime, DM_UINT);
 
@@ -1320,3 +1356,666 @@ void *ScheduleTimerThreadMain(void *param)
     return NULL;
 }
 #endif
+
+/*********************************************************************//**
+**
+** GetOSName
+**
+** Gets the operating system name
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetOSName(dm_req_t *req, char *buf, int len)
+{
+    struct utsname uts;
+    int err;
+    
+    err = uname(&uts);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("uname", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    USP_STRNCPY(buf, uts.sysname, len);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetOSVersion
+**
+** Gets the operating system version
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetOSVersion(dm_req_t *req, char *buf, int len)
+{
+    struct utsname uts;
+    int err;
+    
+    err = uname(&uts);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("uname", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    USP_STRNCPY(buf, uts.version, len);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetKernelVersion
+**
+** Gets the kernel version
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetKernelVersion(dm_req_t *req, char *buf, int len)
+{
+    struct utsname uts;
+    int err;
+    
+    err = uname(&uts);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("uname", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    USP_STRNCPY(buf, uts.release, len);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetArchitecture
+**
+** Gets the system architecture
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetArchitecture(dm_req_t *req, char *buf, int len)
+{
+    struct utsname uts;
+    int err;
+    
+    err = uname(&uts);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("uname", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    USP_STRNCPY(buf, uts.machine, len);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetCPUCount
+**
+** Gets the number of CPU cores
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetCPUCount(dm_req_t *req, char *buf, int len)
+{
+    long num_cpus;
+    
+    num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    if (num_cpus == -1)
+    {
+        USP_ERR_ERRNO("sysconf(_SC_NPROCESSORS_ONLN)", errno);
+        val_uint = 1;
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    val_uint = (unsigned)num_cpus;
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetIPAddress
+**
+** Gets the primary IP address
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetIPAddress(dm_req_t *req, char *buf, int len)
+{
+    struct ifaddrs *ifaddrs_ptr = NULL;
+    struct ifaddrs *ifa = NULL;
+    void *tmp_addr_ptr = NULL;
+    char addr_str[INET_ADDRSTRLEN];
+    int err;
+    
+    USP_STRNCPY(buf, "unknown", len);
+    
+    err = getifaddrs(&ifaddrs_ptr);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("getifaddrs", errno);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    for (ifa = ifaddrs_ptr; ifa != NULL; ifa = ifa->ifa_next)
+    {
+        if (ifa->ifa_addr == NULL) continue;
+        
+        if ((ifa->ifa_addr->sa_family == AF_INET) && 
+            (strcmp(ifa->ifa_name, "lo") != 0) &&
+            (ifa->ifa_flags & IFF_RUNNING))
+        {
+            tmp_addr_ptr = &((struct sockaddr_in*)ifa->ifa_addr)->sin_addr;
+            inet_ntop(AF_INET, tmp_addr_ptr, addr_str, INET_ADDRSTRLEN);
+            USP_STRNCPY(buf, addr_str, len);
+            break;
+        }
+    }
+    
+    if (ifaddrs_ptr != NULL)
+    {
+        freeifaddrs(ifaddrs_ptr);
+    }
+    
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetMACAddress
+**
+** Gets the MAC address of the primary interface
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetMACAddress(dm_req_t *req, char *buf, int len)
+{
+    struct ifaddrs *ifaddrs_ptr = NULL;
+    struct ifaddrs *ifa = NULL;
+    int sock = -1;
+    struct ifreq ifr;
+    char *p;
+    int i, val;
+    int err;
+    unsigned char *mac_addr;
+    
+    USP_STRNCPY(buf, "unknown", len);
+    
+    // Get list of all network interfaces
+    err = getifaddrs(&ifaddrs_ptr);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("getifaddrs", errno);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Create socket for ioctl operations
+    sock = socket(PF_INET, SOCK_DGRAM, 0);
+    if (sock == -1)
+    {
+        USP_ERR_ERRNO("socket", errno);
+        freeifaddrs(ifaddrs_ptr);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Find first non-loopback interface that's running
+    for (ifa = ifaddrs_ptr; ifa != NULL; ifa = ifa->ifa_next)
+    {
+        if (ifa->ifa_addr == NULL) continue;
+        
+        // Skip loopback interface
+        if (strcmp(ifa->ifa_name, "lo") == 0) continue;
+        
+        // Check if interface is up and running
+        if (!(ifa->ifa_flags & IFF_RUNNING)) continue;
+        
+        // Try to get MAC address for this interface
+        memset(&ifr, 0, sizeof(ifr));
+        USP_STRNCPY(ifr.ifr_name, ifa->ifa_name, sizeof(ifr.ifr_name));
+        
+        err = ioctl(sock, SIOCGIFHWADDR, &ifr);
+        if (err == 0)
+        {
+            // Successfully got MAC address
+            mac_addr = (unsigned char *)ifr.ifr_hwaddr.sa_data;
+            
+            // Check if it's not a null MAC address
+            bool is_null = true;
+            for (i = 0; i < MAC_ADDR_LEN; i++)
+            {
+                if (mac_addr[i] != 0)
+                {
+                    is_null = false;
+                    break;
+                }
+            }
+            
+            if (!is_null)
+            {
+                // Format MAC address with colons
+                USP_ASSERT(len > 2*MAC_ADDR_LEN+6);
+                p = buf;
+                for (i = 0; i < MAC_ADDR_LEN; i++)
+                {
+                    if (i > 0)
+                    {
+                        *p++ = ':';
+                    }
+                    val = mac_addr[i];
+                    *p++ = TEXT_UTILS_ValueToHexDigit((val & 0xF0) >> 4, USE_LOWERCASE_HEX_DIGITS);
+                    *p++ = TEXT_UTILS_ValueToHexDigit(val & 0x0F, USE_LOWERCASE_HEX_DIGITS);
+                }
+                *p = '\0';
+                
+                close(sock);
+                freeifaddrs(ifaddrs_ptr);
+                return USP_ERR_OK;
+            }
+        }
+    }
+    
+    // Cleanup if no valid MAC address found
+    close(sock);
+    freeifaddrs(ifaddrs_ptr);
+    
+    return USP_ERR_OK; // Return OK but with "unknown" value
+}
+
+/*********************************************************************//**
+**
+** GetPublicIP
+**
+** Gets the public IP address (placeholder implementation)
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetPublicIP(dm_req_t *req, char *buf, int len)
+{
+    int sock;
+    struct sockaddr_in server_addr;
+    struct sockaddr_in local_addr;
+    socklen_t addr_len = sizeof(local_addr);
+    int err;
+    
+    USP_STRNCPY(buf, "unavailable", len);
+    
+    // Create a UDP socket
+    sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0)
+    {
+        USP_ERR_ERRNO("socket", errno);
+        return USP_ERR_OK; // Return OK but with "unavailable"
+    }
+    
+    // Set up a connection to a well-known external address (Google DNS)
+    // This doesn't actually send data, just determines routing
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(53); // DNS port
+    inet_pton(AF_INET, "8.8.8.8", &server_addr.sin_addr);
+    
+    // Connect to determine which local IP would be used
+    err = connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (err < 0)
+    {
+        USP_ERR_ERRNO("connect", errno);
+        close(sock);
+        return USP_ERR_OK; // Return OK but with "unavailable"
+    }
+    
+    // Get the local address that would be used for this connection
+    err = getsockname(sock, (struct sockaddr*)&local_addr, &addr_len);
+    if (err < 0)
+    {
+        USP_ERR_ERRNO("getsockname", errno);
+        close(sock);
+        return USP_ERR_OK; // Return OK but with "unavailable"
+    }
+    
+    // Convert the IP address to string
+    if (inet_ntop(AF_INET, &local_addr.sin_addr, buf, len) == NULL)
+    {
+        USP_ERR_ERRNO("inet_ntop", errno);
+        close(sock);
+        return USP_ERR_OK; // Return OK but with "unavailable"
+    }
+    
+    close(sock);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetTimezone
+**
+** Gets the system timezone
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetTimezone(dm_req_t *req, char *buf, int len)
+{
+    FILE *fp;
+    char *timezone = NULL;
+    size_t timezone_len = 0;
+    ssize_t read_len;
+    
+    fp = fopen("/etc/timezone", "r");
+    if (fp == NULL)
+    {
+        char *tz_env = getenv("TZ");
+        if (tz_env != NULL)
+        {
+            USP_STRNCPY(buf, tz_env, len);
+        }
+        else
+        {
+            USP_STRNCPY(buf, "unknown", len);
+        }
+        return USP_ERR_OK;
+    }
+    
+    read_len = getline(&timezone, &timezone_len, fp);
+    fclose(fp);
+    
+    if (read_len > 0)
+    {
+        if (timezone[read_len - 1] == '\n')
+        {
+            timezone[read_len - 1] = '\0';
+        }
+        USP_STRNCPY(buf, timezone, len);
+        free(timezone);
+    }
+    else
+    {
+        USP_STRNCPY(buf, "unknown", len);
+        if (timezone)
+        {
+            free(timezone);
+        }
+    }
+    
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetLocation
+**
+** Gets the device location (placeholder implementation)
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetLocation(dm_req_t *req, char *buf, int len)
+{
+    // Simple placeholder coordinates - you can modify these or implement GPS detection
+    USP_STRNCPY(buf, "37.7749,-122.4194", len); // San Francisco coordinates as example
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetStorageUsed
+**
+** Gets the used storage space in bytes for root filesystem
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetStorageUsed(dm_req_t *req, char *buf, int len)
+{
+    struct statvfs vfs;
+    unsigned long long used_bytes;
+    int err;
+    
+    err = statvfs("/", &vfs);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("statvfs", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Calculate used space: (total blocks - free blocks) * block size
+    used_bytes = (unsigned long long)(vfs.f_blocks - vfs.f_bfree) * vfs.f_frsize;
+    
+    USP_SNPRINTF(buf, len, "%llu", used_bytes);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetStorageAvailable
+**
+** Gets the available storage space in bytes for root filesystem
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetStorageAvailable(dm_req_t *req, char *buf, int len)
+{
+    struct statvfs vfs;
+    unsigned long long available_bytes;
+    int err;
+    
+    err = statvfs("/", &vfs);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("statvfs", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Available space: available blocks * block size
+    available_bytes = (unsigned long long)vfs.f_bavail * vfs.f_frsize;
+    
+    USP_SNPRINTF(buf, len, "%llu", available_bytes);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetMemoryUsed
+**
+** Gets the used memory in bytes
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetMemoryUsed(dm_req_t *req, char *buf, int len)
+{
+    struct sysinfo info;
+    unsigned long long used_bytes;
+    int err;
+    
+    err = sysinfo(&info);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("sysinfo", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Calculate used memory: total - free - buffers - cached
+    used_bytes = (unsigned long long)(info.totalram - info.freeram - info.bufferram) * info.mem_unit;
+    
+    USP_SNPRINTF(buf, len, "%llu", used_bytes);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetMemoryAvailable
+**
+** Gets the available memory in bytes
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetMemoryAvailable(dm_req_t *req, char *buf, int len)
+{
+    struct sysinfo info;
+    unsigned long long available_bytes;
+    int err;
+    
+    err = sysinfo(&info);
+    if (err != 0)
+    {
+        USP_ERR_ERRNO("sysinfo", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Available memory: free + buffers + cached
+    available_bytes = (unsigned long long)(info.freeram + info.bufferram) * info.mem_unit;
+    
+    USP_SNPRINTF(buf, len, "%llu", available_bytes);
+    return USP_ERR_OK;
+}
+
+/*********************************************************************//**
+**
+** GetCPUUsage
+**
+** Gets the current CPU usage percentage
+**
+** \param   req - pointer to structure containing path information
+** \param   buf - pointer to buffer into which to return the value of the parameter (as a textual string)
+** \param   len - length of buffer in which to return the value of the parameter
+**
+** \return  USP_ERR_OK if successful
+**
+**************************************************************************/
+int GetCPUUsage(dm_req_t *req, char *buf, int len)
+{
+    FILE *fp;
+    char line[256];
+    unsigned long long user, nice, system, idle, iowait, irq, softirq, steal;
+    unsigned long long total, idle_total;
+    static unsigned long long prev_total = 0, prev_idle = 0;
+    double cpu_usage = 0.0;
+    
+    fp = fopen("/proc/stat", "r");
+    if (fp == NULL)
+    {
+        USP_ERR_ERRNO("fopen(/proc/stat)", errno);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Read the first line (overall CPU stats)
+    if (fgets(line, sizeof(line), fp) == NULL)
+    {
+        USP_ERR_ERRNO("fgets", errno);
+        fclose(fp);
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    fclose(fp);
+    
+    // Parse CPU times: user, nice, system, idle, iowait, irq, softirq, steal
+    if (sscanf(line, "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+               &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal) != 8)
+    {
+        USP_STRNCPY(buf, "unknown", len);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+    
+    // Calculate totals
+    idle_total = idle + iowait;
+    total = user + nice + system + idle + iowait + irq + softirq + steal;
+    
+    // Calculate CPU usage percentage (only if we have previous values)
+    if (prev_total != 0)
+    {
+        unsigned long long total_diff = total - prev_total;
+        unsigned long long idle_diff = idle_total - prev_idle;
+        
+        if (total_diff > 0)
+        {
+            cpu_usage = ((double)(total_diff - idle_diff) / total_diff) * 100.0;
+        }
+    }
+    
+    // Store current values for next calculation
+    prev_total = total;
+    prev_idle = idle_total;
+    
+    USP_SNPRINTF(buf, len, "%.1f%%", cpu_usage);
+    return USP_ERR_OK;
+}
