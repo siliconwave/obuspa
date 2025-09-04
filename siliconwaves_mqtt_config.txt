@@ -1,0 +1,81 @@
+# OBUSPA SiliconWaves MQTT Configuration with 10-second metrics reporting
+
+# Agent identification
+Device.LocalAgent.EndpointID "proto::obuspa_siliconwaves_agent"
+
+# MQTT Client Configuration (pointing to SiliconWaves broker)
+Device.MQTT.Client.1.BrokerAddress "mqtt-siliconwaves.aximsoft.com"
+Device.MQTT.Client.1.ProtocolVersion "5.0"
+Device.MQTT.Client.1.BrokerPort "1883"
+Device.MQTT.Client.1.TransportProtocol "TCP/IP"
+Device.MQTT.Client.1.Username "user"
+Device.MQTT.Client.1.Password "123456"
+Device.MQTT.Client.1.Alias "siliconwaves-agent"
+Device.MQTT.Client.1.Enable true
+Device.MQTT.Client.1.ClientID "obuspa-siliconwaves-agent"
+Device.MQTT.Client.1.KeepAliveTime "60"
+Device.MQTT.Client.1.ConnectRetryTime "5"
+Device.MQTT.Client.1.ConnectRetryIntervalMultiplier "2000"
+Device.MQTT.Client.1.ConnectRetryMaxInterval "60"
+
+# Local Agent MTP Configuration
+Device.LocalAgent.MTP.1.Alias "siliconwaves-mqtt"
+Device.LocalAgent.MTP.1.Enable true
+Device.LocalAgent.MTP.1.Protocol "MQTT"
+Device.LocalAgent.MTP.1.MQTT.ResponseTopicConfigured "usp/controller/request"
+Device.LocalAgent.MTP.1.MQTT.Reference "Device.MQTT.Client.1"
+
+# Controller Configuration with 10-second periodic notifications
+Device.LocalAgent.Controller.1.Alias "siliconwaves-controller"
+Device.LocalAgent.Controller.1.Enable true
+Device.LocalAgent.Controller.1.PeriodicNotifInterval "10"
+Device.LocalAgent.Controller.1.PeriodicNotifTime "0001-01-01T00:00:00Z"
+Device.LocalAgent.Controller.1.ControllerCode ""
+Device.LocalAgent.Controller.1.EndpointID "proto::siliconwaves_usp_controller"
+Device.LocalAgent.Controller.1.AssignedRole "Device.LocalAgent.ControllerTrust.Role.1"
+
+# Controller MTP Configuration
+Device.LocalAgent.Controller.1.MTP.1.Alias "controller-mqtt"
+Device.LocalAgent.Controller.1.MTP.1.Enable true
+Device.LocalAgent.Controller.1.MTP.1.Protocol "MQTT"
+Device.LocalAgent.Controller.1.MTP.1.MQTT.Reference "Device.MQTT.Client.1"
+Device.LocalAgent.Controller.1.MTP.1.MQTT.Topic "usp/agent/response"
+
+# Boot Event Subscription
+Device.LocalAgent.Subscription.1.Alias "boot-event"
+Device.LocalAgent.Subscription.1.Enable true
+Device.LocalAgent.Subscription.1.ID "boot-event-subscription"
+Device.LocalAgent.Subscription.1.Recipient "Device.LocalAgent.Controller.1"
+Device.LocalAgent.Subscription.1.NotifType "Event"
+Device.LocalAgent.Subscription.1.ReferenceList "Device.Boot!"
+Device.LocalAgent.Subscription.1.Persistent true
+
+# Periodic Event Subscription for system metrics (every 10 seconds)
+Device.LocalAgent.Subscription.2.Alias "periodic-metrics"
+Device.LocalAgent.Subscription.2.Enable true
+Device.LocalAgent.Subscription.2.ID "periodic-metrics-subscription"
+Device.LocalAgent.Subscription.2.Recipient "Device.LocalAgent.Controller.1"
+Device.LocalAgent.Subscription.2.NotifType "ValueChange"
+Device.LocalAgent.Subscription.2.ReferenceList "Device.DeviceInfo.UpTime,Device.DeviceInfo.MemoryStatus.Total,Device.DeviceInfo.MemoryStatus.Free,Device.DeviceInfo.Manufacturer,Device.DeviceInfo.ModelName,Device.DeviceInfo.SoftwareVersion"
+Device.LocalAgent.Subscription.2.Persistent true
+
+# Boot Parameters
+Device.LocalAgent.Controller.1.BootParameter.1.Enable true
+Device.LocalAgent.Controller.1.BootParameter.1.ParameterName "Device.LocalAgent.EndpointID"
+
+# Controller Trust Role Configuration
+Device.LocalAgent.ControllerTrust.Role.1.Alias "full-access-role"
+Device.LocalAgent.ControllerTrust.Role.1.Enable true
+Device.LocalAgent.ControllerTrust.Role.1.Name "FullAccess"
+
+# Full access permissions for the controller
+Device.LocalAgent.ControllerTrust.Role.1.Permission.1.Alias "full-read-write"
+Device.LocalAgent.ControllerTrust.Role.1.Permission.1.Enable true
+Device.LocalAgent.ControllerTrust.Role.1.Permission.1.Targets "Device."
+Device.LocalAgent.ControllerTrust.Role.1.Permission.1.Param "rw"
+Device.LocalAgent.ControllerTrust.Role.1.Permission.1.Obj "rw"
+Device.LocalAgent.ControllerTrust.Role.1.Permission.1.InstantiatedObj "rw"
+Device.LocalAgent.ControllerTrust.Role.1.Permission.1.CommandEvent "rw"
+
+# Internal reboot cause
+Internal.Reboot.Cause "LocalFactoryReset"
