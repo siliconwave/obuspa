@@ -266,9 +266,11 @@ int DEVICE_LOCAL_AGENT_Init(void)
     err |= USP_REGISTER_Param_Constant("Device.DeviceInfo.Manufacturer", VENDOR_MANUFACTURER, DM_STRING);
     err |= USP_REGISTER_Param_Constant("Device.DeviceInfo.ModelName", VENDOR_MODEL_NAME, DM_STRING);
     err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.HardwareVersion", GetHardwareVersion, DM_STRING);
-    err |= USP_REGISTER_VendorParam_ReadOnly(
+    err |= USP_REGISTER_VendorParam_ReadWrite(
     "Device.DeviceInfo.HostName",
     GetHostName,
+    SetHostName,
+    NULL,
     DM_STRING
 );
     err |= USP_REGISTER_VendorParam_ReadOnly("Device.DeviceInfo.OSName", GetOSName, DM_STRING);
@@ -709,8 +711,89 @@ int GetHostName(dm_req_t *req, char *value, int len)
     return USP_ERR_OK;
 }
 
+/*********************************************************************//**
+**
+** SetHostName
+**
+** Sets the system hostname
+**
+** \param   req - pointer to structure identifying the parameter
+** \param   value - new hostname value to set
+**
+** \return  USP_ERR_OK if successful
+**          USP_ERR_INTERNAL_ERROR if failed to set hostname
+**
+**************************************************************************/
+int SetHostName(dm_req_t *req, char *value)
+{
+    int result;
+    char cmd[256];
 
-// registering HostName parameter
+    (void)req;  // Unused parameter
+
+    // Validate hostname format
+    if (value == NULL || strlen(value) == 0)
+    {
+        USP_ERR_SetMessage("%s: Hostname cannot be empty", __FUNCTION__);
+        return USP_ERR_INVALID_VALUE;
+    }
+
+    if (strlen(value) > 63)
+    {
+        USP_ERR_SetMessage("%s: Hostname too long (max 63 characters)", __FUNCTION__);
+        return USP_ERR_INVALID_VALUE;
+    }
+
+    // Check for valid hostname characters (letters, numbers, hyphens)
+    for (int i = 0; value[i] != '\0'; i++)
+    {
+        char c = value[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '-'))
+        {
+            USP_ERR_SetMessage("%s: Invalid hostname character '%c'. Only letters, numbers, and hyphens allowed", __FUNCTION__, c);
+            return USP_ERR_INVALID_VALUE;
+        }
+    }
+
+    // Don't allow hostname to start or end with hyphen
+    if (value[0] == '-' || value[strlen(value)-1] == '-')
+    {
+        USP_ERR_SetMessage("%s: Hostname cannot start or end with hyphen", __FUNCTION__);
+        return USP_ERR_INVALID_VALUE;
+    }
+
+    USP_LOG_Info("%s: Setting hostname to '%s'", __FUNCTION__, value);
+
+    // Set the hostname using sethostname() system call
+    result = sethostname(value, strlen(value));
+    if (result != 0)
+    {
+        USP_ERR_ERRNO("sethostname", errno);
+        return USP_ERR_INTERNAL_ERROR;
+    }
+
+    // Also update /etc/hostname for persistence across reboots
+    snprintf(cmd, sizeof(cmd), "echo '%s' > /etc/hostname", value);
+    result = system(cmd);
+    if (result != 0)
+    {
+        USP_LOG_Warning("%s: Failed to update /etc/hostname (exit code: %d). Hostname change may not persist after reboot.", __FUNCTION__, result);
+        // Don't return error here as the immediate hostname change was successful
+    }
+
+    // Update /etc/hosts to map the new hostname to localhost
+    snprintf(cmd, sizeof(cmd), "sed -i 's/127.0.1.1.*/127.0.1.1\\t%s/' /etc/hosts 2>/dev/null || echo '127.0.1.1\\t%s' >> /etc/hosts", value, value);
+    result = system(cmd);
+    if (result != 0)
+    {
+        USP_LOG_Warning("%s: Failed to update /etc/hosts (exit code: %d)", __FUNCTION__, result);
+        // Don't return error here as the main hostname change was successful
+    }
+
+    USP_LOG_Info("%s: Hostname successfully set to '%s'", __FUNCTION__, value);
+    return USP_ERR_OK;
+}
 
 
 #ifndef REMOVE_DEVICE_INFO
