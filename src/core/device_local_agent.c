@@ -1400,20 +1400,166 @@ int GetOSName(dm_req_t *req, char *buf, int len)
 ** \return  USP_ERR_OK if successful
 **
 **************************************************************************/
-int GetOSVersion(dm_req_t *req, char *buf, int len)
+int GetOSVersion(dm_req_t *req, char *buf, int len) 
 {
     struct utsname uts;
     int err;
+    FILE *fp;
+    char os_release[256];
+    char os_name[128] = "";
+    char os_version[64] = "";
+    char temp_buf[512];
     
+    // Get basic system info
     err = uname(&uts);
-    if (err != 0)
-    {
+    if (err != 0) {
         USP_ERR_ERRNO("uname", errno);
         USP_STRNCPY(buf, "unknown", len);
         return USP_ERR_INTERNAL_ERROR;
     }
+
+    // Try to read OS release information from /etc/os-release (standard)
+    fp = fopen("/etc/os-release", "r");
+    if (fp != NULL) {
+        while (fgets(os_release, sizeof(os_release), fp)) {
+            // Remove newline
+            os_release[strcspn(os_release, "\n")] = 0;
+            
+            // Parse PRETTY_NAME first (contains full name with version)
+            if (strncmp(os_release, "PRETTY_NAME=", 12) == 0) {
+                char *value = os_release + 12;
+                // Remove quotes if present
+                if (value[0] == '"') {
+                    value++;
+                    char *end_quote = strchr(value, '"');
+                    if (end_quote) *end_quote = '\0';
+                }
+                USP_STRNCPY(buf, value, len);
+                fclose(fp);
+                return USP_ERR_OK;
+            }
+            
+            // Parse NAME (OS name)
+            if (strncmp(os_release, "NAME=", 5) == 0) {
+                char *value = os_release + 5;
+                if (value[0] == '"') {
+                    value++;
+                    char *end_quote = strchr(value, '"');
+                    if (end_quote) *end_quote = '\0';
+                }
+                USP_STRNCPY(os_name, value, sizeof(os_name));
+            }
+            
+            // Parse VERSION (version number)
+            if (strncmp(os_release, "VERSION=", 8) == 0) {
+                char *value = os_release + 8;
+                if (value[0] == '"') {
+                    value++;
+                    char *end_quote = strchr(value, '"');
+                    if (end_quote) *end_quote = '\0';
+                }
+                USP_STRNCPY(os_version, value, sizeof(os_version));
+            }
+        }
+        fclose(fp);
+        
+        // If we have both name and version, combine them
+        if (strlen(os_name) > 0 && strlen(os_version) > 0) {
+            snprintf(temp_buf, sizeof(temp_buf), "%s %s", os_name, os_version);
+            USP_STRNCPY(buf, temp_buf, len);
+            return USP_ERR_OK;
+        }
+        // If we only have name, use that
+        else if (strlen(os_name) > 0) {
+            USP_STRNCPY(buf, os_name, len);
+            return USP_ERR_OK;
+        }
+    }
+
+    // Fallback: Try /etc/lsb-release (Ubuntu/Debian specific)
+    fp = fopen("/etc/lsb-release", "r");
+    if (fp != NULL) {
+        while (fgets(os_release, sizeof(os_release), fp)) {
+            os_release[strcspn(os_release, "\n")] = 0;
+            
+            // Parse DISTRIB_DESCRIPTION first (full description)
+            if (strncmp(os_release, "DISTRIB_DESCRIPTION=", 20) == 0) {
+                char *value = os_release + 20;
+                if (value[0] == '"') {
+                    value++;
+                    char *end_quote = strchr(value, '"');
+                    if (end_quote) *end_quote = '\0';
+                }
+                USP_STRNCPY(buf, value, len);
+                fclose(fp);
+                return USP_ERR_OK;
+            }
+            
+            // Parse DISTRIB_ID (distribution name)
+            if (strncmp(os_release, "DISTRIB_ID=", 11) == 0) {
+                char *value = os_release + 11;
+                USP_STRNCPY(os_name, value, sizeof(os_name));
+            }
+            
+            // Parse DISTRIB_RELEASE (version number)
+            if (strncmp(os_release, "DISTRIB_RELEASE=", 16) == 0) {
+                char *value = os_release + 16;
+                USP_STRNCPY(os_version, value, sizeof(os_version));
+            }
+        }
+        fclose(fp);
+        
+        // Combine name and version from lsb-release
+        if (strlen(os_name) > 0 && strlen(os_version) > 0) {
+            snprintf(temp_buf, sizeof(temp_buf), "%s %s", os_name, os_version);
+            USP_STRNCPY(buf, temp_buf, len);
+            return USP_ERR_OK;
+        }
+    }
+
+    // Fallback: Try reading specific distribution files
+    // Check for Ubuntu version file
+    fp = fopen("/etc/debian_version", "r");
+    if (fp != NULL) {
+        if (fgets(os_version, sizeof(os_version), fp)) {
+            os_version[strcspn(os_version, "\n")] = 0;
+            // Check if it's Ubuntu by looking for ubuntu in /proc/version
+            FILE *proc_fp = fopen("/proc/version", "r");
+            if (proc_fp != NULL) {
+                char proc_version[512];
+                if (fgets(proc_version, sizeof(proc_version), proc_fp)) {
+                    if (strstr(proc_version, "Ubuntu") != NULL) {
+                        snprintf(temp_buf, sizeof(temp_buf), "Ubuntu %s", os_version);
+                    } else {
+                        snprintf(temp_buf, sizeof(temp_buf), "Debian %s", os_version);
+                    }
+                    USP_STRNCPY(buf, temp_buf, len);
+                    fclose(proc_fp);
+                    fclose(fp);
+                    return USP_ERR_OK;
+                }
+                fclose(proc_fp);
+            }
+        }
+        fclose(fp);
+    }
+
+    // Check for CentOS/RHEL/Fedora
+    fp = fopen("/etc/redhat-release", "r");
+    if (fp != NULL) {
+        if (fgets(temp_buf, sizeof(temp_buf), fp)) {
+            temp_buf[strcspn(temp_buf, "\n")] = 0;
+            USP_STRNCPY(buf, temp_buf, len);
+            fclose(fp);
+            return USP_ERR_OK;
+        }
+        fclose(fp);
+    }
+
+    // Final fallback: Use system name from uname with kernel version
+    snprintf(temp_buf, sizeof(temp_buf), "%s %s", uts.sysname, uts.release);
+    USP_STRNCPY(buf, temp_buf, len);
     
-    USP_STRNCPY(buf, uts.version, len);
     return USP_ERR_OK;
 }
 
