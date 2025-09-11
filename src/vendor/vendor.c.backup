@@ -11,7 +11,6 @@
 #include "usp_api.h"
 #include "usp_err_codes.h"
 #include "core/usp_log.h"
-#include "openwrt_compat.h"
 
 // ----------------------------------------------------------------------
 // Forward declarations
@@ -32,24 +31,9 @@ int VendorReboot(void)
 {
     USP_LOG_Info("VendorReboot: Initiating system reboot...");
 
-    int result;
-
-    // Use platform-specific reboot command
-    if (is_openwrt_system())
-    {
-        USP_LOG_Info("VendorReboot: Detected OpenWRT system, using OpenWRT reboot method");
-        result = system("/sbin/reboot");
-        if (result != 0) {
-            USP_LOG_Warning("VendorReboot: /sbin/reboot failed, trying alternative method");
-            // Try alternative OpenWRT reboot using sysrq
-            result = system("echo 1 > /proc/sys/kernel/sysrq && echo b > /proc/sysrq-trigger");
-        }
-    }
-    else
-    {
-        USP_LOG_Info("VendorReboot: Using standard Linux reboot methods");
-        result = system("reboot");
-    }
+    // Perform system reboot using the reboot command
+    // This will actually reboot the system
+    int result = system("reboot");
 
     if (result != 0) {
         USP_LOG_Error("VendorReboot: Failed to execute reboot command (exit code: %d)", result);
@@ -57,7 +41,7 @@ int VendorReboot(void)
         result = system("shutdown -r now");
         if (result != 0) {
             USP_LOG_Error("VendorReboot: Failed to execute shutdown command (exit code: %d)", result);
-            // As a last resort, try systemctl (if available)
+            // As a last resort, try systemctl
             result = system("systemctl reboot");
             if (result != 0) {
                 USP_LOG_Error("VendorReboot: All reboot methods failed");
@@ -165,20 +149,11 @@ int PackageUpdateOperation(dm_req_t *req, kv_vector_t *input_args, int instance)
             return USP_ERR_OK;
         }
 
-        // Install downloaded package using platform-specific method
+        // Install downloaded .deb (running as root, no sudo needed)
         LogOperation("INSTALL", "Starting package installation");
 
-        if (is_openwrt_system())
-        {
-            USP_LOG_Info("Using OpenWRT package manager (opkg)");
-            snprintf(cmd, sizeof(cmd), "opkg install %s 2>&1", download_path);
-        }
-        else
-        {
-            USP_LOG_Info("Using Debian package manager (dpkg/apt)");
-            snprintf(cmd, sizeof(cmd),
-                     "dpkg -i %s 2>&1 || (apt-get update && apt-get -f install -y)", download_path);
-        }
+        snprintf(cmd, sizeof(cmd),
+                 "dpkg -i %s 2>&1 || (apt-get update && apt-get -f install -y)", download_path);
 
         USP_LOG_Info("Executing install command: %s", cmd);
         err = system(cmd);
@@ -193,21 +168,13 @@ int PackageUpdateOperation(dm_req_t *req, kv_vector_t *input_args, int instance)
             return USP_ERR_OK;
         }
     } else {
-        // Case 2: Install directly from repository using platform-specific method
-        LogOperation("INSTALL", "Starting repository installation");
+        // Case 2: Install directly from apt repo (running as root, no sudo needed)
+        LogOperation("INSTALL", "Starting apt repository installation");
 
-        if (is_openwrt_system())
-        {
-            USP_LOG_Info("Using OpenWRT package repository (opkg)");
-            snprintf(cmd, sizeof(cmd), "opkg update && opkg install %s", package);
-        }
-        else
-        {
-            USP_LOG_Info("Using APT package repository");
-            snprintf(cmd, sizeof(cmd), "apt-get update && apt-get install -y %s", package);
-        }
+        snprintf(cmd, sizeof(cmd),
+                 "apt-get update && apt-get install -y %s", package);
 
-        USP_LOG_Info("Executing repository install command: %s", cmd);
+        USP_LOG_Info("Executing apt install command: %s", cmd);
         err = system(cmd);
 
         if (WIFEXITED(err) && WEXITSTATUS(err) == 0) {

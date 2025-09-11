@@ -71,7 +71,6 @@
 #include "iso8601.h"
 #include "os_utils.h"
 #include "bdc_exec.h"
-#include "openwrt_compat.h"
 
 
 
@@ -774,33 +773,13 @@ int SetHostName(dm_req_t *req, char *value)
         return USP_ERR_INTERNAL_ERROR;
     }
 
-    // Update hostname persistence using platform-specific method
-    if (is_openwrt_system())
+    // Also update /etc/hostname for persistence across reboots
+    snprintf(cmd, sizeof(cmd), "echo '%s' > /etc/hostname", value);
+    result = system(cmd);
+    if (result != 0)
     {
-        USP_LOG_Info("%s: Detected OpenWRT, using UCI for hostname persistence", __FUNCTION__);
-        snprintf(cmd, sizeof(cmd), "uci set system.@system[0].hostname='%s' && uci commit system", value);
-        result = system(cmd);
-        if (result == 0)
-        {
-            // Reload network configuration to apply hostname change
-            system("/etc/init.d/network reload >/dev/null 2>&1 || true");
-            USP_LOG_Info("%s: UCI hostname configuration updated successfully", __FUNCTION__);
-        }
-        else
-        {
-            USP_LOG_Warning("%s: UCI hostname update failed (exit code: %d)", __FUNCTION__, result);
-        }
-    }
-    else
-    {
-        USP_LOG_Info("%s: Using standard Linux hostname persistence", __FUNCTION__);
-        snprintf(cmd, sizeof(cmd), "echo '%s' > /etc/hostname", value);
-        result = system(cmd);
-        if (result != 0)
-        {
-            USP_LOG_Warning("%s: Failed to update /etc/hostname (exit code: %d). Hostname change may not persist after reboot.", __FUNCTION__, result);
-            // Don't return error here as the immediate hostname change was successful
-        }
+        USP_LOG_Warning("%s: Failed to update /etc/hostname (exit code: %d). Hostname change may not persist after reboot.", __FUNCTION__, result);
+        // Don't return error here as the immediate hostname change was successful
     }
 
     // Update /etc/hosts to map the new hostname to localhost

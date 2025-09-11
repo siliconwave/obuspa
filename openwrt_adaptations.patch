@@ -1,0 +1,211 @@
+--- a/src/core/device_local_agent.c
++++ b/src/core/device_local_agent.c
+@@ -774,11 +774,25 @@ int SetHostName(dm_req_t *req, char *value)
+         return USP_ERR_INTERNAL_ERROR;
+     }
+ 
+-    // Also update /etc/hostname for persistence across reboots
+-    snprintf(cmd, sizeof(cmd), "echo '%s' > /etc/hostname", value);
++    // OpenWRT uses UCI for configuration management
++    // Update the system hostname in UCI configuration
++    snprintf(cmd, sizeof(cmd), "uci set system.@system[0].hostname='%s' && uci commit system", value);
+     result = system(cmd);
+     if (result != 0)
+     {
++        // Fallback to traditional /etc/hostname method for non-OpenWRT systems
++        USP_LOG_Warning("%s: UCI hostname update failed, trying /etc/hostname fallback", __FUNCTION__);
++        snprintf(cmd, sizeof(cmd), "echo '%s' > /etc/hostname", value);
++        result = system(cmd);
++    }
++    
++    if (result != 0)
++    {
+         USP_LOG_Warning("%s: Failed to update /etc/hostname (exit code: %d). Hostname change may not persist after reboot.", __FUNCTION__, result);
+         // Don't return error here as the immediate hostname change was successful
+     }
++    else
++    {
++        // Reload network configuration to apply hostname change
++        system("/etc/init.d/network reload >/dev/null 2>&1 || true");
++    }
+ 
+     // Update /etc/hosts to map the new hostname to localhost
+     snprintf(cmd, sizeof(cmd), "sed -i 's/127.0.1.1.*/127.0.1.1\\t%s/' /etc/hosts 2>/dev/null || echo '127.0.1.1\\t%s' >> /etc/hosts", value, value);
+
+--- a/src/vendor/vendor.c
++++ b/src/vendor/vendor.c
+@@ -29,12 +29,28 @@ void LogOperation(const char* operation, const char* message)
+ // Vendor Reboot Callback
+ int VendorReboot(void)
+ {
+     USP_LOG_Info("VendorReboot: Initiating system reboot...");
+ 
+-    // Perform system reboot using the reboot command
+-    // This will actually reboot the system
+-    int result = system("reboot");
++    int result;
++    
++    // Check if we're running on OpenWRT by looking for UCI
++    if (access("/sbin/uci", F_OK) == 0)
++    {
++        USP_LOG_Info("VendorReboot: Detected OpenWRT system, using OpenWRT reboot method");
++        // Use OpenWRT's reboot command
++        result = system("/sbin/reboot");
++        if (result != 0) {
++            // Try alternative OpenWRT reboot
++            result = system("echo 1 > /proc/sys/kernel/sysrq && echo b > /proc/sysrq-trigger");
++        }
++    }
++    else
++    {
++        USP_LOG_Info("VendorReboot: Using standard Linux reboot methods");
++        // Standard Linux reboot
++        result = system("reboot");
++    }
+ 
+     if (result != 0) {
+         USP_LOG_Error("VendorReboot: Failed to execute reboot command (exit code: %d)", result);
+         // Try alternative reboot methods
+@@ -110,6 +126,7 @@ int PackageUpdateOperation(dm_req_t *req, kv_vector_t *input_args, int instance
+     char cmd[1024];
+     char download_path[512];
+     int err;
++    bool is_openwrt = false;
+     kv_vector_t *output_args;
+ 
+     // Extract parameters from input arguments
+@@ -119,6 +136,10 @@ int PackageUpdateOperation(dm_req_t *req, kv_vector_t *input_args, int instance
+     LogOperation("PACKAGE_UPDATE", "Starting package update operation");
+     USP_LOG_Info("Package: %s, URL: %s", package, url ? url : "N/A");
+ 
++    // Detect if we're running on OpenWRT
++    is_openwrt = (access("/sbin/uci", F_OK) == 0);
++    USP_LOG_Info("Detected system type: %s", is_openwrt ? "OpenWRT" : "Standard Linux");
++
+     if ((url != NULL) && (strlen(url) > 0)) {
+         // Case 1: Download from provided URL
+         LogOperation("DOWNLOAD", "Starting package download");
+@@ -128,8 +149,13 @@ int PackageUpdateOperation(dm_req_t *req, kv_vector_t *input_args, int instance
+         // Remove existing file if it exists
+         unlink(download_path);
+ 
+-        // Enhanced wget command with better error handling and longer timeout
+-        snprintf(cmd, sizeof(cmd),
++        if (is_openwrt) {
++            // OpenWRT may have limited wget options
++            snprintf(cmd, sizeof(cmd),
++                     "wget -T 300 -t 3 -O %s '%s' 2>&1",
++                     download_path, url);
++        } else {
++            snprintf(cmd, sizeof(cmd),
+                  "/usr/bin/wget --timeout=300 --tries=3 --progress=dot:mega --no-check-certificate -O %s '%s' 2>&1",
+                  download_path, url);
++        }
+ 
+         USP_LOG_Info("Executing download command: %s", cmd);
+@@ -158,8 +184,18 @@ int PackageUpdateOperation(dm_req_t *req, kv_vector_t *input_args, int instance
+         // Install downloaded .deb (running as root, no sudo needed)
+         LogOperation("INSTALL", "Starting package installation");
+ 
+-        snprintf(cmd, sizeof(cmd),
++        if (is_openwrt) {
++            // OpenWRT uses opkg for package management
++            snprintf(cmd, sizeof(cmd),
++                     "opkg install %s 2>&1", download_path);
++        } else {
++            // Standard Debian/Ubuntu systems use dpkg/apt
++            snprintf(cmd, sizeof(cmd),
+                  "dpkg -i %s 2>&1 || (apt-get update && apt-get -f install -y)", download_path);
++        }
+ 
+         USP_LOG_Info("Executing install command: %s", cmd);
+         err = system(cmd);
+@@ -177,8 +213,15 @@ int PackageUpdateOperation(dm_req_t *req, kv_vector_t *input_args, int instance
+         // Case 2: Install directly from apt repo (running as root, no sudo needed)
+         LogOperation("INSTALL", "Starting apt repository installation");
+ 
+-        snprintf(cmd, sizeof(cmd),
++        if (is_openwrt) {
++            // OpenWRT package installation from repository
++            snprintf(cmd, sizeof(cmd),
++                     "opkg update && opkg install %s", package);
++        } else {
++            // Standard apt installation
++            snprintf(cmd, sizeof(cmd),
+                  "apt-get update && apt-get install -y %s", package);
++        }
+ 
+         USP_LOG_Info("Executing apt install command: %s", cmd);
+         err = system(cmd);
+
+--- a/src/core/database.c
++++ b/src/core/database.c
+@@ -45,6 +45,7 @@
+ #include <string.h>
+ #include <sqlite3.h>
+ #include <sys/stat.h>
++#include <unistd.h>
+ 
+ #include "common_defs.h"
+ #include "database.h"
+@@ -89,6 +90,20 @@ int DATABASE_Init(char *db_file)
+     char *err_msg = NULL;
+     int result;
+     char *dir;
++    char resolved_db_file[512];
++    
++    // Handle OpenWRT-specific database path
++    if (access("/sbin/uci", F_OK) == 0) {
++        // Running on OpenWRT - use /tmp for database (tmpfs)
++        // This is because OpenWRT often has limited flash storage
++        if (strstr(db_file, "/usr/local/var/obuspa") != NULL) {
++            snprintf(resolved_db_file, sizeof(resolved_db_file), "/tmp/obuspa/usp.db");
++            db_file = resolved_db_file;
++            USP_LOG_Info("DATABASE_Init: OpenWRT detected, using database path: %s", db_file);
++        }
++    }
++    
++    strncpy(resolved_db_file, db_file, sizeof(resolved_db_file)-1);
+ 
+     // Exit if database file is already open
+     if (db_handle != NULL)
+
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -15,7 +15,12 @@ AM_CFLAGS = -Wall -Wfatal-errors
+ 
+ bin_PROGRAMS = obuspa
+ 
+-OBUSPA_LOCAL_STATE_DIR = "$(localstatedir)/obuspa"
++# Conditional database directory based on target system
++if OPENWRT_BUILD
++OBUSPA_LOCAL_STATE_DIR = "/tmp/obuspa"
++else
++OBUSPA_LOCAL_STATE_DIR = "$(localstatedir)/obuspa"
++endif
+ 
+ SOURCES = src/core/main.c \
+                     src/core/mtp_exec.c \
+
+--- a/configure.ac
++++ b/configure.ac
+@@ -22,6 +22,9 @@ AC_ARG_ENABLE(websockets, [AS_HELP_STRING([--enable-websockets], [enable WebSo
+ AC_ARG_ENABLE(uds, [AS_HELP_STRING([--enable-uds], [enable UDS MTP Message support])],,enable_uds=yes)
+ AC_ARG_ENABLE(bulkdata, [AS_HELP_STRING([--enable-bulkdata], [enable Bulk Data Collection support])],,enable_bulkdata=yes)
+ 
++# OpenWRT build option
++AC_ARG_ENABLE(openwrt, [AS_HELP_STRING([--enable-openwrt], [enable OpenWRT-specific adaptations])],,enable_openwrt=no)
++
+ # Checks for libraries.
+ # This also defines autotools magic variables for use in the .am files
+ PKG_CHECK_MODULES([sqlite3], [sqlite3])
+@@ -76,6 +79,10 @@ AC_CHECK_HEADERS([execinfo.h])
+ AC_CHECK_FUNCS([mallinfo])
+ AC_CHECK_FUNCS([mallinfo2])
+ 
++# Set up OpenWRT conditional
++AM_CONDITIONAL([OPENWRT_BUILD], [test "x$enable_openwrt" = "xyes"])
++AS_IF([test "x$enable_openwrt" = "xyes"], [AC_DEFINE(OPENWRT_BUILD)])
++
+ # Generate Makefiles
+ AC_CONFIG_FILES([Makefile])
