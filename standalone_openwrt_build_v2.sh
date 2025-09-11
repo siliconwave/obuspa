@@ -2,13 +2,13 @@
 
 # Enhanced Standalone OpenWRT OBUSPA Build Script
 # This script runs directly on OpenWRT RISC-V device
-# It downloads source code, installs dependencies, and builds OBUSPA
-# Usage: scp this script to OpenWRT device and run it there
+# It uses the existing OBUSPA source in the current directory, installs dependencies, and builds OBUSPA
+# Usage: scp this script to the OpenWRT device into the OBUSPA source directory and run it there
 
 set -e
 
 # Configuration
-OBUSPA_REPO="https://github.com/BroadbandForum/obuspa.git"
+# Using current directory as OBUSPA source; no repository cloning
 BUILD_DIR="/tmp/obuspa-standalone-build"
 INSTALL_DIR="/usr/local"
 
@@ -1062,24 +1062,20 @@ EOF
     log_success "Additional headers created successfully"
 }
 
-# Function to download and prepare source code
+# Function to prepare existing source code in current directory
 prepare_source() {
-    log_info "Preparing OBUSPA source code..."
+    log_info "Using existing OBUSPA source in current directory..."
 
-    # Clean up any existing build directory
-    rm -rf "$BUILD_DIR"
-    mkdir -p "$BUILD_DIR"
-    cd "$BUILD_DIR"
+    BUILD_DIR="$(pwd)"
 
-    # Clone the repository
-    log_info "Cloning OBUSPA repository..."
-    if ! git clone "$OBUSPA_REPO" .; then
-        log_error "Failed to clone OBUSPA repository"
-        log_error "Make sure git and internet connectivity are available"
+    # Validate that we're in an OBUSPA source tree
+    if [ ! -f "./configure" ] && [ ! -f "./autogen.sh" ] && [ ! -f "./configure.ac" ] && [ ! -f "./CMakeLists.txt" ]; then
+        log_error "This directory does not appear to be an OBUSPA source tree"
+        log_error "Expected one of: configure, autogen.sh, configure.ac, CMakeLists.txt"
         exit 1
     fi
 
-    log_success "Source code downloaded successfully"
+    log_success "Source directory detected: $BUILD_DIR"
 }
 
 # Function to apply OpenWRT-specific adaptations
@@ -1427,7 +1423,7 @@ main() {
     create_additional_headers
 
     echo ""
-    log_info "Step 5/8: Downloading and preparing source code..."
+    log_info "Step 5/8: Preparing existing source code in current directory..."
     prepare_source
 
     echo ""
